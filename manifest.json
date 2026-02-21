@@ -1,0 +1,17 @@
+
+{
+  "manifest_version": 3,
+  "name": "FB Automator Pro",
+  "version": "1.0.2",
+  "description": "Convida automaticamente quem reagiu aos posts para curtir sua página no Facebook.",
+  "permissions": [
+    "scripting",
+    "activeTab"
+  ],
+  "host_permissions": [
+    "https://*.facebook.com/*"
+  ],
+  "action": {
+    "default_popup": "index.html"
+  }
+}
