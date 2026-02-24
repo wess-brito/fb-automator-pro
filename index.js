@@ -4,68 +4,55 @@ const FB_INVITE_LOGIC = async (config) => {
     const log = (msg) => { try { chrome.runtime.sendMessage({ type: 'LOG', message: msg }); } catch (e) { } };
     const notifySuccess = () => { try { chrome.runtime.sendMessage({ type: 'INVITE_SUCCESS' }); } catch (e) { } };
 
+    let isPaused = false;
+    let isStopped = false;
+
+    const messageHandler = (request) => {
+        if (request.type === 'COMMAND_PAUSE') {
+            isPaused = true;
+            log('⏸️ Automação pausada.');
+        } else if (request.type === 'COMMAND_RESUME') {
+            isPaused = false;
+            log('▶️ Automação retomada.');
+        } else if (request.type === 'COMMAND_STOP') {
+            isStopped = true;
+            log('🛑 Parada solicitada.');
+        }
+    };
+
+    chrome.runtime.onMessage.addListener(messageHandler);
+
     const findScrollableModal = () => {
-        // Encontrar todos os diálogos/modais abertos
         const dialogs = Array.from(document.querySelectorAll('div[role="dialog"]'));
         if (dialogs.length === 0) return null;
-
-        // Procurar o diálogo que contém botões de convite (o modal das reações)
         const reactionDialog = dialogs.find(dialog => {
             const hasInviteBtn = dialog.querySelector('div[aria-label*="onvidar"], div[aria-label*="nvite"], div[role="button"]');
             if (!hasInviteBtn) return false;
-
             const text = hasInviteBtn.innerText?.toLowerCase() || "";
             return text.includes("convidar") || text.includes("invite");
         });
-
-        const target = reactionDialog || dialogs[dialogs.length - 1]; // Fallback para o último se não achar pelo botão
-
-        // Encontrar o maior container rolável dentro do modal escolhido
+        const target = reactionDialog || dialogs[dialogs.length - 1];
         const allDivs = Array.from(target.querySelectorAll('div'));
         const scrollables = allDivs.filter(el => {
             const style = window.getComputedStyle(el);
-            const hasOverflow = style.overflowY === 'auto' || style.overflowY === 'scroll';
-            return hasOverflow && el.scrollHeight > el.clientHeight;
+            return (style.overflowY === 'auto' || style.overflowY === 'scroll') && el.scrollHeight > el.clientHeight;
         });
-
-        const bestScrollable = scrollables.sort((a, b) => b.scrollHeight - a.scrollHeight)[0];
-        return bestScrollable || target;
+        return scrollables.sort((a, b) => b.scrollHeight - a.scrollHeight)[0] || target;
     };
 
     const triggerClick = async (el) => {
-        const events = ['mousedown', 'mouseup', 'click'];
-        events.forEach(evt => {
-            el.dispatchEvent(new MouseEvent(evt, {
-                view: window,
-                bubbles: true,
-                cancelable: true,
-                buttons: 1
-            }));
+        ['mousedown', 'mouseup', 'click'].forEach(evt => {
+            el.dispatchEvent(new MouseEvent(evt, { view: window, bubbles: true, cancelable: true, buttons: 1 }));
         });
     };
 
     const getInviteButtons = (container) => {
         const scope = container || document;
-        const selectors = [
-            'div[aria-label*="onvidar"]',
-            'div[aria-label*="nvite"]',
-            'div[role="button"]',
-            'span[role="button"]',
-            'button'
-        ];
-        const candidates = Array.from(scope.querySelectorAll(selectors.join(',')));
-        return candidates.filter(el => {
-            const hText = el.innerText?.trim().toLowerCase() || el.getAttribute('aria-label')?.trim().toLowerCase() || '';
-
-            // Verifica se é um botão de convite (Português ou Inglês)
+        const selectors = ['div[aria-label*="onvidar"]', 'div[aria-label*="nvite"]', 'div[role="button"]', 'span[role="button"]', 'button'];
+        return Array.from(scope.querySelectorAll(selectors.join(','))).filter(el => {
+            const hText = (el.innerText || el.getAttribute('aria-label') || '').trim().toLowerCase();
             const isInvite = hText.includes('convidar') || hText.includes('invite');
-
-            // Verifica se já foi convidado/enviado
-            const isDone = hText.includes('convidado') || hText.includes('invited') ||
-                hText.includes('enviado') || hText.includes('sent') ||
-                hText.includes('pendente') || hText.includes('pending');
-
-            // O botão deve ser um "Invite" e NÃO pode estar "Done"
+            const isDone = ['convidado', 'invited', 'enviado', 'sent', 'pendente', 'pending'].some(term => hText.includes(term));
             return isInvite && !isDone && el.offsetParent !== null;
         });
     };
@@ -73,76 +60,67 @@ const FB_INVITE_LOGIC = async (config) => {
     const modal = findScrollableModal();
     if (!modal) {
         log('❌ Falha: Modal de reações não encontrado.');
+        chrome.runtime.onMessage.removeListener(messageHandler);
         return 0;
     }
 
     log(`🚀 Iniciando Automação...`);
-    log(`⚙️ Configuração: Limite=${config.maxInvites}, Pausa=${config.delay}s`);
-
     let totalInvited = 0;
     let scrollRetries = 0;
     let lastHeight = modal.scrollHeight;
 
-    while (totalInvited < config.maxInvites) {
-        const buttons = getInviteButtons(modal);
+    try {
+        while (totalInvited < config.maxInvites && !isStopped) {
+            // Check for pause
+            while (isPaused && !isStopped) {
+                await sleep(500);
+            }
+            if (isStopped) break;
 
-        if (buttons.length > 0) {
-            log(`🔎 Encontrados ${buttons.length} botões de convite disponíveis.`);
-            for (const btn of buttons) {
-                if (totalInvited >= config.maxInvites) break;
-                try {
-                    // Pequena pausa para garantir visibilidade
-                    btn.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                    await sleep(600);
+            const buttons = getInviteButtons(modal);
+            if (buttons.length > 0) {
+                for (const btn of buttons) {
+                    if (totalInvited >= config.maxInvites || isStopped) break;
 
-                    await triggerClick(btn);
-                    totalInvited++;
-                    notifySuccess();
+                    while (isPaused && !isStopped) {
+                        await sleep(500);
+                    }
+                    if (isStopped) break;
 
-                    log(`✅ Convite ${totalInvited}/${config.maxInvites} enviado.`);
-
-                    // Pausa configurável + aleatoriedade
-                    const pause = (config.delay * 1000) + (Math.random() * 800);
-                    await sleep(pause);
-                } catch (err) {
-                    log('⚠️ Erro ao processar clique em um botão.');
+                    try {
+                        btn.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                        await sleep(600);
+                        await triggerClick(btn);
+                        totalInvited++;
+                        notifySuccess();
+                        log(`✅ Convite ${totalInvited}/${config.maxInvites} enviado.`);
+                        await sleep((config.delay * 1000) + (Math.random() * 800));
+                    } catch (err) { }
+                }
+            } else {
+                modal.scrollTop = modal.scrollHeight;
+                await sleep(2500);
+                if (modal.scrollHeight > lastHeight) {
+                    lastHeight = modal.scrollHeight;
+                    scrollRetries = 0;
+                } else {
+                    if (modal.querySelector('[role="progressbar"]')) {
+                        await sleep(3000);
+                        continue;
+                    }
+                    scrollRetries++;
+                    if (scrollRetries >= 3) break;
+                    modal.scrollTop -= 300;
+                    await sleep(800);
+                    modal.scrollTop = modal.scrollHeight;
                 }
             }
-        } else {
-            log('⏳ Nenhum botão visível agora. Rolando para carregar mais...');
         }
-
-        // Rolar para o fundo para carregar mais conteúdo
-        modal.scrollTop = modal.scrollHeight;
-        await sleep(2500); // Aguarda carregamento do FB
-
-        if (modal.scrollHeight > lastHeight) {
-            log('📜 Lista expandida com novos usuários.');
-            lastHeight = modal.scrollHeight;
-            scrollRetries = 0;
-        } else {
-            // Verifica se há spinner de carregamento ativado
-            if (modal.querySelector('[role="progressbar"]')) {
-                log('⏳ Facebook está carregando dados...');
-                await sleep(3000);
-                continue;
-            }
-
-            scrollRetries++;
-            if (scrollRetries >= 3) {
-                log('🏁 Fim da lista atingido ou sem novos botões.');
-                break;
-            }
-
-            // Tenta "balançar" o scroll para forçar carregamento
-            log('🔄 Tentativa de carregar mais...');
-            modal.scrollTop -= 300;
-            await sleep(800);
-            modal.scrollTop = modal.scrollHeight;
-        }
+    } finally {
+        chrome.runtime.onMessage.removeListener(messageHandler);
+        log(`🏁 Processo concluído. Total: ${totalInvited}`);
+        chrome.runtime.sendMessage({ type: 'AUTOMATION_FINISHED' });
     }
-
-    log(`🏁 Processo concluído. Total de convites nesta sessão: ${totalInvited}`);
     return totalInvited;
 };
 
@@ -227,6 +205,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 updateDailyDisplay();
                 chrome.storage.local.set({ dailyCount: dailyTotal });
             }
+            if (request.type === 'AUTOMATION_FINISHED') {
+                setButtonStyle('idle');
+            }
         });
     }
 
@@ -248,17 +229,62 @@ document.addEventListener('DOMContentLoaded', () => {
         fbDetect.querySelector('span').textContent = 'Modo Simulação (Dev)';
     }
 
-    // Ação Iniciar
+    let currentStatus = 'idle'; // idle, running, paused
+
+    const setButtonStyle = (status) => {
+        currentStatus = status;
+        const span = btnStart.querySelector('span');
+        const svg = btnStart.querySelector('svg');
+
+        btnStart.classList.remove('btn-pause', 'btn-resume');
+
+        if (status === 'running') {
+            btnStart.classList.add('btn-pause');
+            span.textContent = 'Pausar Automação';
+            svg.innerHTML = '<rect x="6" y="4" width="4" height="16"></rect><rect x="14" y="4" width="4" height="16"></rect>';
+            statStatus.textContent = 'Executando...';
+        } else if (status === 'paused') {
+            btnStart.classList.add('btn-resume');
+            span.textContent = 'Retomar Automação';
+            svg.innerHTML = '<polygon points="5 3 19 12 5 21 5 3"></polygon>';
+            statStatus.textContent = 'Pausado';
+        } else {
+            span.textContent = 'Iniciar Automação';
+            svg.innerHTML = '<polygon points="5 3 19 12 5 21 5 3"></polygon>';
+            statStatus.textContent = 'Aguardando';
+            btnStart.disabled = false;
+        }
+    };
+
+    // Ação Iniciar / Pausar / Retomar
     btnStart.addEventListener('click', async () => {
+        if (currentStatus === 'running') {
+            // Pausar
+            chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+                chrome.tabs.sendMessage(tabs[0].id, { type: 'COMMAND_PAUSE' });
+            });
+            setButtonStyle('paused');
+            return;
+        }
+
+        if (currentStatus === 'paused') {
+            // Retomar
+            chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+                chrome.tabs.sendMessage(tabs[0].id, { type: 'COMMAND_RESUME' });
+            });
+            setButtonStyle('running');
+            return;
+        }
+
+        // Iniciar
         if (dailyTotal >= DAILY_MAX) {
             addLog("🚫 Limite diário de 1050 atingido.");
             return;
         }
 
-        btnStart.disabled = true;
+        setButtonStyle('running');
         invitedSession = 0;
         statTotal.textContent = "0";
-        statStatus.textContent = 'Processando...';
         addLog('🚀 Iniciando automação...');
 
         try {
@@ -271,21 +297,21 @@ document.addEventListener('DOMContentLoaded', () => {
                     func: FB_INVITE_LOGIC,
                     args: [{ maxInvites: allowed, delay: Number(selectDelay.value) }]
                 });
-                addLog('🏁 Ciclo finalizado!');
             } else {
                 addLog('Simulação: Modo Dev.');
-                for (let i = 0; i < 3; i++) {
+                for (let i = 0; i < 5; i++) {
+                    if (currentStatus === 'idle') break;
+                    while (currentStatus === 'paused') await new Promise(r => setTimeout(r, 500));
                     await new Promise(r => setTimeout(r, 1000));
                     invitedSession++; dailyTotal++;
                     statTotal.textContent = invitedSession;
                     updateDailyDisplay();
                 }
+                setButtonStyle('idle');
             }
         } catch (err) {
             addLog('❌ Erro: ' + err.message);
-        } finally {
-            btnStart.disabled = false;
-            statStatus.textContent = 'Aguardando';
+            setButtonStyle('idle');
         }
     });
 
