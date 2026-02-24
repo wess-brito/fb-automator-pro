@@ -16,5 +16,11 @@
   },
   "side_panel": {
     "default_path": "index.html"
+  },
+  "icons": {
+    "16": "icon.svg",
+    "32": "icon.svg",
+    "48": "icon.svg",
+    "128": "icon.svg"
   }
 }
